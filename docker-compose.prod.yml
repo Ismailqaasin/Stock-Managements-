@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-StockManagementDB}
+      POSTGRES_USER: ${POSTGRES_USER:-stockroom}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Generate .env first}
+      TZ: UTC
+    volumes: [stockdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    build: {context: ., dockerfile: infra/api.Dockerfile}
+    restart: unless-stopped
+    depends_on: {db: {condition: service_healthy}}
+    environment:
+      ConnectionStrings__Stock: Host=db;Database=${POSTGRES_DB:-StockManagementDB};Username=${POSTGRES_USER:-stockroom};Password=${POSTGRES_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD}
+      TRUSTED_PROXY_IP: 172.29.145.250
+      QUESTPDF_LICENSE: ${QUESTPDF_LICENSE:-Community}
+    volumes: [stockfiles:/var/lib/stockroom]
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8080/api/auth/config']
+      interval: 5s
+      timeout: 4s
+      retries: 20
+  web:
+    build: {context: ., dockerfile: infra/web.Dockerfile}
+    restart: unless-stopped
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api, web]
+    networks:
+      default: {ipv4_address: 172.29.145.250}
+    ports: ['80:80', '443:443', '443:443/udp']
+    environment: {DOMAIN: '${DOMAIN:?Set a domain pointing to this host}'}
+    volumes: ['./infra/Caddyfile:/etc/caddy/Caddyfile:ro', caddydata:/data, caddyconfig:/config]
+volumes:
+  stockdata:
+  stockfiles:
+  caddydata:
+  caddyconfig:
+networks:
+  default:
+    ipam:
+      config: [{subnet: 172.29.145.0/24, ip_range: 172.29.145.0/25}]

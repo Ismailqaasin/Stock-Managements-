@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+**/node_modules
+**/.next*
+.local
+**/bin
+**/obj
+**/*.tsbuildinfo
+test-results

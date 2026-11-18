@@ -1,0 +1,43 @@
+name: Verify Stockroom
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  web-and-ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22, cache: npm}
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+  api-and-postgres:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: {dotnet-version: '8.0.x'}
+      - run: dotnet test backend/StockMS.sln -c Release
+      - name: Native PostgreSQL concurrency and restore acceptance
+        run: docker run --rm --user postgres -v "$PWD:/workspace:ro" -w /workspace --entrypoint bash postgres:16-bookworm tests/native-postgres.sh
+  deploy-smoke:
+    runs-on: ubuntu-latest
+    needs: [api-and-postgres, web-and-ledger]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 22}
+      - run: node scripts/init-env.mjs
+      - run: docker compose -f docker-compose.prod.yml config -q
+      - run: docker compose -f docker-compose.prod.yml up -d --build --wait db api web
+      - name: Exercise native PDF, pg_dump and transactional pg_restore on disposable data
+        run: |
+          set -a
+          . ./.env
+          set +a
+          docker compose -f docker-compose.prod.yml exec -T -e ADMIN_PASSWORD -e STOCKROOM_TEST_DATABASE=disposable web node --input-type=module - < scripts/deploy-smoke.mjs
+      - if: always()
+        run: docker compose -f docker-compose.prod.yml down -v

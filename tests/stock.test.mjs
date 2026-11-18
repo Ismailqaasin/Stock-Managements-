@@ -1,19 +1,138 @@
-import {test} from 'node:test';
-import assert from 'node:assert/strict';
-import {PGlite} from '@electric-sql/pglite';
-import {readFile} from 'node:fs/promises';
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { PGlite } from "@electric-sql/pglite";
+import { readFile } from "node:fs/promises";
 const db = new PGlite();
-for(const file of ['001_schema','002_engine','003_queries']) await db.exec(await readFile(new URL(`../database/${file}.sql`,import.meta.url),'utf8'));
-const sql=async(text,args=[]) => (await db.query(text,args)).rows[0];
-const cmd=async(r,b={},op='create',id=null)=>(await sql('SELECT stock_command($1,$2,$3,$4) x',[r,op,id,JSON.stringify(b)])).x;
-const detail=async(r,id)=>(await sql('SELECT stock_detail($1,$2) x',[r,id])).x;
-let n=0;
-async function product(q=0){let {id}=await cmd('products',{name:`Item ${++n}`,sku:`SKU-${n}`,selling_price:'2.35'}); if(q)await cmd('stock-ins',{items:[{product_id:id,quantity:q}]}); return id;}
-const order=(id,quantity,confirm=false)=>cmd('orders',{customer_type:'Cash',confirm,items:[{product_id:id,quantity}]});
-test('new workspace has no mock inventory',async()=>assert.equal((await sql('select dashboard_summary() d')).d.products,0));
-test('multi-line receipt rolls back as one transaction',async()=>{const id=await product(); await assert.rejects(cmd('stock-ins',{items:[{product_id:id,quantity:8},{product_id:id,quantity:3}]})); assert.equal((await detail('products',id)).current_stock,0)});
-test('reservation, confirm once, cancellation reversal, immutable audit',async()=>{const id=await product(10),o=await order(id,7);assert.equal((await detail('products',id)).available,3);await assert.rejects(order(id,4));await cmd('orders',{},'confirm',o.id);await assert.rejects(cmd('orders',{},'confirm',o.id));assert.equal((await detail('products',id)).current_stock,3);await cmd('orders',{reason:'Customer cancelled'},'cancel',o.id);assert.equal((await detail('products',id)).available,10);await assert.rejects(db.exec('delete from audit_logs'));await assert.rejects(db.exec('update stock_movements set quantity=1'));});
-test('good vs damaged, return quantity bound and delivery guard',async()=>{const id=await product(6),o=await order(id,6,true);await cmd('orders',{},'deliver',o.id);await assert.rejects(cmd('orders',{reason:'no'},'cancel',o.id));const line=(await detail('orders',o.id)).items[0];const payload={order_id:o.id,reason:'Review',items:[{order_item_id:line.id,quantity:3,condition:'Good'},{order_item_id:line.id,quantity:2,condition:'Damaged'}]};const r=await cmd('returns',payload);await assert.rejects(cmd('returns',payload));await cmd('returns',{},'approve',r.id);await assert.rejects(cmd('returns',{},'approve',r.id));assert.equal((await detail('products',id)).available,3);assert.equal((await detail('orders',o.id)).items[0].returned_qty,5)});
-test('competing sales cannot oversell; ledger reconciles',async()=>{const id=await product(5);const result=await Promise.allSettled([order(id,4,true),order(id,4,true)]);assert.equal(result.filter(x=>x.status==='fulfilled').length,1);assert.equal((await sql('select stock_integrity() d')).d.ok,true)});
-test('sample, gift, reversal and adjustment respect reservations',async()=>{const id=await product(12);await order(id,5);for(const type of ['Sample','Gift']){const d=await cmd('stock-outs',{type,product_id:id,quantity:2,recipient_name:'Recipient',reason:'Review'});await cmd('stock-outs',{reason:'Not collected'},'reverse',d.id);await assert.rejects(cmd('stock-outs',{reason:'Again'},'reverse',d.id));}await assert.rejects(cmd('stock-adjustments',{product_id:id,new_quantity:4,reason:'Count'}));await cmd('stock-adjustments',{product_id:id,new_quantity:8,reason:'Count'});assert.equal((await detail('products',id)).available,3)});
-test('stale updates fail and reports paginate',async()=>{const id=await product();let p=await detail('products',id);await cmd('products',{...p,name:'Renamed'},'update',id);await assert.rejects(cmd('products',p,'update',id));const page=(await sql('select stock_list($1,$2) x',['products','{"pageSize":1,"q":"Renamed"}'])).x;assert.equal(page.totalCount,1);assert.equal(page.items[0].name,'Renamed')});
+for (const file of ["001_schema", "002_engine", "003_queries"])
+  await db.exec(
+    await readFile(new URL(`../database/${file}.sql`, import.meta.url), "utf8"),
+  );
+const sql = async (text, args = []) => (await db.query(text, args)).rows[0];
+const cmd = async (r, b = {}, op = "create", id = null) =>
+  (
+    await sql("SELECT stock_command($1,$2,$3,$4) x", [
+      r,
+      op,
+      id,
+      JSON.stringify(b),
+    ])
+  ).x;
+const detail = async (r, id) =>
+  (await sql("SELECT stock_detail($1,$2) x", [r, id])).x;
+let n = 0;
+async function product(q = 0) {
+  let { id } = await cmd("products", {
+    name: `Item ${++n}`,
+    sku: `SKU-${n}`,
+    selling_price: "2.35",
+  });
+  if (q) await cmd("stock-ins", { items: [{ product_id: id, quantity: q }] });
+  return id;
+}
+const order = (id, quantity, confirm = false) =>
+  cmd("orders", {
+    customer_type: "Cash",
+    confirm,
+    items: [{ product_id: id, quantity }],
+  });
+test("new workspace has no mock inventory", async () =>
+  assert.equal((await sql("select dashboard_summary() d")).d.products, 0));
+test("multi-line receipt rolls back as one transaction", async () => {
+  const id = await product();
+  await assert.rejects(
+    cmd("stock-ins", {
+      items: [
+        { product_id: id, quantity: 8 },
+        { product_id: id, quantity: 3 },
+      ],
+    }),
+  );
+  assert.equal((await detail("products", id)).current_stock, 0);
+});
+test("reservation, confirm once, cancellation reversal, immutable audit", async () => {
+  const id = await product(10),
+    o = await order(id, 7);
+  assert.equal((await detail("products", id)).available, 3);
+  await assert.rejects(order(id, 4));
+  await cmd("orders", {}, "confirm", o.id);
+  await assert.rejects(cmd("orders", {}, "confirm", o.id));
+  assert.equal((await detail("products", id)).current_stock, 3);
+  await cmd("orders", { reason: "Customer cancelled" }, "cancel", o.id);
+  assert.equal((await detail("products", id)).available, 10);
+  await assert.rejects(db.exec("delete from audit_logs"));
+  await assert.rejects(db.exec("update stock_movements set quantity=1"));
+});
+test("good vs damaged, return quantity bound and delivery guard", async () => {
+  const id = await product(6),
+    o = await order(id, 6, true);
+  await cmd("orders", {}, "deliver", o.id);
+  await assert.rejects(cmd("orders", { reason: "no" }, "cancel", o.id));
+  const line = (await detail("orders", o.id)).items[0];
+  const payload = {
+    order_id: o.id,
+    reason: "Review",
+    items: [
+      { order_item_id: line.id, quantity: 3, condition: "Good" },
+      { order_item_id: line.id, quantity: 2, condition: "Damaged" },
+    ],
+  };
+  const r = await cmd("returns", payload);
+  await assert.rejects(cmd("returns", payload));
+  await cmd("returns", {}, "approve", r.id);
+  await assert.rejects(cmd("returns", {}, "approve", r.id));
+  assert.equal((await detail("products", id)).available, 3);
+  assert.equal((await detail("orders", o.id)).items[0].returned_qty, 5);
+});
+test("competing sales cannot oversell; ledger reconciles", async () => {
+  const id = await product(5);
+  const result = await Promise.allSettled([
+    order(id, 4, true),
+    order(id, 4, true),
+  ]);
+  assert.equal(result.filter((x) => x.status === "fulfilled").length, 1);
+  assert.equal((await sql("select stock_integrity() d")).d.ok, true);
+});
+test("sample, gift, reversal and adjustment respect reservations", async () => {
+  const id = await product(12);
+  await order(id, 5);
+  for (const type of ["Sample", "Gift"]) {
+    const d = await cmd("stock-outs", {
+      type,
+      product_id: id,
+      quantity: 2,
+      recipient_name: "Recipient",
+      reason: "Review",
+    });
+    await cmd("stock-outs", { reason: "Not collected" }, "reverse", d.id);
+    await assert.rejects(
+      cmd("stock-outs", { reason: "Again" }, "reverse", d.id),
+    );
+  }
+  await assert.rejects(
+    cmd("stock-adjustments", {
+      product_id: id,
+      new_quantity: 4,
+      reason: "Count",
+    }),
+  );
+  await cmd("stock-adjustments", {
+    product_id: id,
+    new_quantity: 8,
+    reason: "Count",
+  });
+  assert.equal((await detail("products", id)).available, 3);
+});
+test("stale updates fail and reports paginate", async () => {
+  const id = await product();
+  let p = await detail("products", id);
+  await cmd("products", { ...p, name: "Renamed" }, "update", id);
+  await assert.rejects(cmd("products", p, "update", id));
+  const page = (
+    await sql("select stock_list($1,$2) x", [
+      "products",
+      '{"pageSize":1,"q":"Renamed"}',
+    ])
+  ).x;
+  assert.equal(page.totalCount, 1);
+  assert.equal(page.items[0].name, "Renamed");
+});
