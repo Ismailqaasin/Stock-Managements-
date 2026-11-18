@@ -133,28 +133,12 @@ public sealed class BackupService(StockDb db, StockService stock, string directo
                 // Decompress only after verifying the archive. Use psql's single transaction
                 // so even a post-restore integrity failure rolls the ENTIRE restore back.
                 var dump = Path.Combine(scratch, "archive.sql");
-                var before = Path.Combine(scratch, "before.sql");
-                var after = Path.Combine(scratch, "after.sql");
+                var before = Path.Combine(AppContext.BaseDirectory, "Sql", "before_restore.sql");
+                var after = Path.Combine(AppContext.BaseDirectory, "Sql", "after_restore.sql");
                 await Run("pg_restore", ["--file", dump, "--clean", "--if-exists", "--no-owner", "--no-acl", path], ct);
-                await File.WriteAllTextAsync(before, """
-                    CREATE TEMP TABLE keep_backups ON COMMIT DROP AS SELECT * FROM public.backups;
-                    CREATE TEMP TABLE keep_restores ON COMMIT DROP AS SELECT * FROM public.restore_logs;
-                    """, ct);
-                await File.WriteAllTextAsync(after, $$"""
-                    SET LOCAL search_path TO public, pg_catalog;
-                    TRUNCATE restore_logs, backups RESTART IDENTITY;
-                    INSERT INTO backups OVERRIDING SYSTEM VALUE SELECT * FROM pg_temp.keep_backups;
-                    INSERT INTO restore_logs OVERRIDING SYSTEM VALUE SELECT * FROM pg_temp.keep_restores;
-                    SELECT setval(pg_get_serial_sequence('backups','id'),max(id)) FROM backups;
-                    SELECT setval(pg_get_serial_sequence('restore_logs','id'),max(id)) FROM restore_logs;
-                    DO $check$ BEGIN
-                      IF NOT ((stock_integrity()->>'ok')::boolean) THEN RAISE EXCEPTION 'Restored balances do not reconcile'; END IF;
-                    END $check$;
-                    UPDATE refresh_tokens SET revoked_at=now() WHERE revoked_at IS NULL;
-                    SELECT log_event('Restore','backups',{{id}},'Verified database backup restored');
-                    UPDATE restore_logs SET status='Completed',completed_at=now() WHERE id={{log[0]}};
-                    """, ct);
-                await Run("psql", ["-X", "--quiet", "--single-transaction", "--set", "ON_ERROR_STOP=1", "-f", before, "-f", dump, "-f", after], ct);
+                await Run("psql", ["-X", "--quiet", "--single-transaction", "--set", "ON_ERROR_STOP=1",
+                    "-v", $"stockroom_backup_id={id}", "-v", $"stockroom_log_id={log[0]}",
+                    "-f", before, "-f", dump, "-f", after], ct);
                 NpgsqlConnection.ClearAllPools();
             }
             catch
