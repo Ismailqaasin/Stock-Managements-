@@ -1,0 +1,16 @@
+node_modules/
+.next/
+.local/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+bin/
+obj/
+*.user
+TestResults/
+playwright-report/
+test-results/
+
+.next-build/
+frontend/next-env.d.ts
