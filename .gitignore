@@ -11,3 +11,6 @@ obj/
 TestResults/
 playwright-report/
 test-results/
+
+.next-build/
+frontend/next-env.d.ts
